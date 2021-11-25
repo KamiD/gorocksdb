@@ -1,11 +1,10 @@
-package gorocksdb
+package grocksdb
 
 // #include <stdlib.h>
 // #include "rocksdb/c.h"
 import "C"
 import (
 	"bytes"
-	"errors"
 	"unsafe"
 )
 
@@ -109,14 +108,11 @@ func (iter *Iterator) SeekForPrev(key []byte) {
 
 // Err returns nil if no errors happened during iteration, or the actual
 // error otherwise.
-func (iter *Iterator) Err() error {
+func (iter *Iterator) Err() (err error) {
 	var cErr *C.char
 	C.rocksdb_iter_get_error(iter.c, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+	return
 }
 
 // Close closes the iterator.

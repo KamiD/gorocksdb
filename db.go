@@ -1,12 +1,16 @@
-package gorocksdb
+package grocksdb
 
 // #include <stdlib.h>
 // #include "rocksdb/c.h"
 import "C"
 import (
-	"errors"
 	"fmt"
 	"unsafe"
+)
+
+var (
+	// ErrColumnFamilyMustMatch indicates number of column family names and options must match.
+	ErrColumnFamilyMustMatch = fmt.Errorf("must provide the same number of column family names and options")
 )
 
 // Range is a range of keys in the database. GetApproximateSizes calls with it
@@ -24,60 +28,95 @@ type DB struct {
 }
 
 // OpenDb opens a database with the specified options.
-func OpenDb(opts *Options, name string) (*DB, error) {
+func OpenDb(opts *Options, name string) (db *DB, err error) {
 	var (
 		cErr  *C.char
 		cName = C.CString(name)
 	)
-	defer C.free(unsafe.Pointer(cName))
-	db := C.rocksdb_open(opts.c, cName, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return nil, errors.New(C.GoString(cErr))
+
+	_db := C.rocksdb_open(opts.c, cName, &cErr)
+	if err = fromCError(cErr); err == nil {
+		db = &DB{
+			name: name,
+			c:    _db,
+			opts: opts,
+		}
 	}
-	return &DB{
-		name: name,
-		c:    db,
-		opts: opts,
-	}, nil
+
+	C.free(unsafe.Pointer(cName))
+	return
 }
 
 // OpenDbWithTTL opens a database with TTL support with the specified options.
-func OpenDbWithTTL(opts *Options, name string, ttl int) (*DB, error) {
+func OpenDbWithTTL(opts *Options, name string, ttl int) (db *DB, err error) {
 	var (
 		cErr  *C.char
 		cName = C.CString(name)
 	)
-	defer C.free(unsafe.Pointer(cName))
-	db := C.rocksdb_open_with_ttl(opts.c, cName, C.int(ttl), &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return nil, errors.New(C.GoString(cErr))
+
+	_db := C.rocksdb_open_with_ttl(opts.c, cName, C.int(ttl), &cErr)
+	if err = fromCError(cErr); err == nil {
+		db = &DB{
+			name: name,
+			c:    _db,
+			opts: opts,
+		}
 	}
-	return &DB{
-		name: name,
-		c:    db,
-		opts: opts,
-	}, nil
+
+	C.free(unsafe.Pointer(cName))
+	return
 }
 
 // OpenDbForReadOnly opens a database with the specified options for readonly usage.
-func OpenDbForReadOnly(opts *Options, name string, errorIfLogFileExist bool) (*DB, error) {
+func OpenDbForReadOnly(opts *Options, name string, errorIfWalFileExists bool) (db *DB, err error) {
 	var (
 		cErr  *C.char
 		cName = C.CString(name)
 	)
-	defer C.free(unsafe.Pointer(cName))
-	db := C.rocksdb_open_for_read_only(opts.c, cName, boolToChar(errorIfLogFileExist), &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return nil, errors.New(C.GoString(cErr))
+
+	_db := C.rocksdb_open_for_read_only(opts.c, cName, boolToChar(errorIfWalFileExists), &cErr)
+	if err = fromCError(cErr); err == nil {
+		db = &DB{
+			name: name,
+			c:    _db,
+			opts: opts,
+		}
 	}
-	return &DB{
-		name: name,
-		c:    db,
-		opts: opts,
-	}, nil
+
+	C.free(unsafe.Pointer(cName))
+	return
+}
+
+// OpenDbAsSecondary creates a secondary instance that
+// can dynamically tail the MANIFEST of a primary that must have already been
+// created. User can call TryCatchUpWithPrimary to make the secondary
+// instance catch up with primary (WAL tailing is NOT supported now) whenever
+// the user feels necessary. Column families created by the primary after the
+// secondary instance starts are currently ignored by the secondary instance.
+// Column families opened by secondary and dropped by the primary will be
+// dropped by secondary as well. However the user of the secondary instance
+// can still access the data of such dropped column family as long as they
+// do not destroy the corresponding column family handle.
+// WAL tailing is not supported at present, but will arrive soon.
+func OpenDbAsSecondary(opts *Options, name, secondaryPath string) (db *DB, err error) {
+	var (
+		cErr  *C.char
+		cName = C.CString(name)
+		cPath = C.CString(secondaryPath)
+	)
+
+	_db := C.rocksdb_open_as_secondary(opts.c, cName, cPath, &cErr)
+	if err = fromCError(cErr); err == nil {
+		db = &DB{
+			name: name,
+			c:    _db,
+			opts: opts,
+		}
+	}
+
+	C.free(unsafe.Pointer(cName))
+	C.free(unsafe.Pointer(cPath))
+	return
 }
 
 // OpenDbColumnFamilies opens a database with the specified column families.
@@ -86,24 +125,18 @@ func OpenDbColumnFamilies(
 	name string,
 	cfNames []string,
 	cfOpts []*Options,
-) (*DB, []*ColumnFamilyHandle, error) {
+) (db *DB, cfHandles []*ColumnFamilyHandle, err error) {
 	numColumnFamilies := len(cfNames)
 	if numColumnFamilies != len(cfOpts) {
-		return nil, nil, errors.New("must provide the same number of column family names and options")
+		err = ErrColumnFamilyMustMatch
+		return
 	}
 
 	cName := C.CString(name)
-	defer C.free(unsafe.Pointer(cName))
-
 	cNames := make([]*C.char, numColumnFamilies)
 	for i, s := range cfNames {
 		cNames[i] = C.CString(s)
 	}
-	defer func() {
-		for _, s := range cNames {
-			C.free(unsafe.Pointer(s))
-		}
-	}()
 
 	cOpts := make([]*C.rocksdb_options_t, numColumnFamilies)
 	for i, o := range cfOpts {
@@ -113,7 +146,7 @@ func OpenDbColumnFamilies(
 	cHandles := make([]*C.rocksdb_column_family_handle_t, numColumnFamilies)
 
 	var cErr *C.char
-	db := C.rocksdb_open_column_families(
+	_db := C.rocksdb_open_column_families(
 		opts.c,
 		cName,
 		C.int(numColumnFamilies),
@@ -122,21 +155,94 @@ func OpenDbColumnFamilies(
 		&cHandles[0],
 		&cErr,
 	)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return nil, nil, errors.New(C.GoString(cErr))
+	if err = fromCError(cErr); err == nil {
+		db = &DB{
+			name: name,
+			c:    _db,
+			opts: opts,
+		}
+		cfHandles = make([]*ColumnFamilyHandle, numColumnFamilies)
+		for i, c := range cHandles {
+			cfHandles[i] = NewNativeColumnFamilyHandle(c)
+		}
 	}
 
-	cfHandles := make([]*ColumnFamilyHandle, numColumnFamilies)
-	for i, c := range cHandles {
-		cfHandles[i] = NewNativeColumnFamilyHandle(c)
+	C.free(unsafe.Pointer(cName))
+	for _, s := range cNames {
+		C.free(unsafe.Pointer(s))
+	}
+	return
+}
+
+// OpenDbColumnFamiliesWithTTL opens a database with the specified column families along with their ttls.
+//
+// BEHAVIOUR:
+// TTL is accepted in seconds
+// (int32_t)Timestamp(creation) is suffixed to values in Put internally
+// Expired TTL values deleted in compaction only:(Timestamp+ttl<time_now)
+// Get/Iterator may return expired entries(compaction not run on them yet)
+// Different TTL may be used during different Opens
+// Example: Open1 at t=0 with ttl=4 and insert k1,k2, close at t=2
+//          Open2 at t=3 with ttl=5. Now k1,k2 should be deleted at t>=5
+// read_only=true opens in the usual read-only mode. Compactions will not be
+//  triggered(neither manual nor automatic), so no expired entries removed
+//
+// CONSTRAINTS:
+// Not specifying/passing or non-positive TTL behaves like TTL = infinity
+func OpenDbColumnFamiliesWithTTL(
+	opts *Options,
+	name string,
+	cfNames []string,
+	cfOpts []*Options,
+	ttls []C.int,
+) (db *DB, cfHandles []*ColumnFamilyHandle, err error) {
+	numColumnFamilies := len(cfNames)
+	if numColumnFamilies != len(cfOpts) {
+		err = ErrColumnFamilyMustMatch
+		return
 	}
 
-	return &DB{
-		name: name,
-		c:    db,
-		opts: opts,
-	}, cfHandles, nil
+	cName := C.CString(name)
+	cNames := make([]*C.char, numColumnFamilies)
+	for i, s := range cfNames {
+		cNames[i] = C.CString(s)
+	}
+
+	cOpts := make([]*C.rocksdb_options_t, numColumnFamilies)
+	for i, o := range cfOpts {
+		cOpts[i] = o.c
+	}
+
+	cHandles := make([]*C.rocksdb_column_family_handle_t, numColumnFamilies)
+
+	var cErr *C.char
+	_db := C.rocksdb_open_column_families_with_ttl(
+		opts.c,
+		cName,
+		C.int(numColumnFamilies),
+		&cNames[0],
+		&cOpts[0],
+		&cHandles[0],
+		&ttls[0],
+		&cErr,
+	)
+	if err = fromCError(cErr); err == nil {
+		db = &DB{
+			name: name,
+			c:    _db,
+			opts: opts,
+		}
+		cfHandles = make([]*ColumnFamilyHandle, numColumnFamilies)
+		for i, c := range cHandles {
+			cfHandles[i] = NewNativeColumnFamilyHandle(c)
+		}
+	}
+
+	C.free(unsafe.Pointer(cName))
+	for _, s := range cNames {
+		C.free(unsafe.Pointer(s))
+	}
+	return
 }
 
 // OpenDbForReadOnlyColumnFamilies opens a database with the specified column
@@ -146,25 +252,19 @@ func OpenDbForReadOnlyColumnFamilies(
 	name string,
 	cfNames []string,
 	cfOpts []*Options,
-	errorIfLogFileExist bool,
-) (*DB, []*ColumnFamilyHandle, error) {
+	errorIfWalFileExists bool,
+) (db *DB, cfHandles []*ColumnFamilyHandle, err error) {
 	numColumnFamilies := len(cfNames)
 	if numColumnFamilies != len(cfOpts) {
-		return nil, nil, errors.New("must provide the same number of column family names and options")
+		err = ErrColumnFamilyMustMatch
+		return
 	}
 
 	cName := C.CString(name)
-	defer C.free(unsafe.Pointer(cName))
-
 	cNames := make([]*C.char, numColumnFamilies)
 	for i, s := range cfNames {
 		cNames[i] = C.CString(s)
 	}
-	defer func() {
-		for _, s := range cNames {
-			C.free(unsafe.Pointer(s))
-		}
-	}()
 
 	cOpts := make([]*C.rocksdb_options_t, numColumnFamilies)
 	for i, o := range cfOpts {
@@ -174,62 +274,129 @@ func OpenDbForReadOnlyColumnFamilies(
 	cHandles := make([]*C.rocksdb_column_family_handle_t, numColumnFamilies)
 
 	var cErr *C.char
-	db := C.rocksdb_open_for_read_only_column_families(
+	_db := C.rocksdb_open_for_read_only_column_families(
 		opts.c,
 		cName,
 		C.int(numColumnFamilies),
 		&cNames[0],
 		&cOpts[0],
 		&cHandles[0],
-		boolToChar(errorIfLogFileExist),
+		boolToChar(errorIfWalFileExists),
 		&cErr,
 	)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return nil, nil, errors.New(C.GoString(cErr))
+	if err = fromCError(cErr); err == nil {
+		db = &DB{
+			name: name,
+			c:    _db,
+			opts: opts,
+		}
+		cfHandles = make([]*ColumnFamilyHandle, numColumnFamilies)
+		for i, c := range cHandles {
+			cfHandles[i] = NewNativeColumnFamilyHandle(c)
+		}
 	}
 
-	cfHandles := make([]*ColumnFamilyHandle, numColumnFamilies)
-	for i, c := range cHandles {
-		cfHandles[i] = NewNativeColumnFamilyHandle(c)
+	C.free(unsafe.Pointer(cName))
+	for _, s := range cNames {
+		C.free(unsafe.Pointer(s))
+	}
+	return
+}
+
+// OpenDbAsSecondaryColumnFamilies opens database as secondary instance with column families.
+// You can open a subset of column families in secondary mode.
+// The `opts` specify the database specific options.
+// The `name` argument specifies the name of the primary db that you have used
+// to open the primary instance.
+// The `secondaryPath` argument points to a directory where the secondary
+// instance stores its info log.
+// The `column_families` arguments specifieds a list of column families to open.
+// If any of the column families does not exist, the function returns non-OK
+// status.
+func OpenDbAsSecondaryColumnFamilies(
+	opts *Options,
+	name string,
+	secondaryPath string,
+	cfNames []string,
+	cfOpts []*Options,
+) (db *DB, cfHandles []*ColumnFamilyHandle, err error) {
+	numColumnFamilies := len(cfNames)
+	if numColumnFamilies != len(cfOpts) {
+		err = ErrColumnFamilyMustMatch
+		return
 	}
 
-	return &DB{
-		name: name,
-		c:    db,
-		opts: opts,
-	}, cfHandles, nil
+	cName := C.CString(name)
+	cPath := C.CString(secondaryPath)
+
+	cNames := make([]*C.char, numColumnFamilies)
+	for i, s := range cfNames {
+		cNames[i] = C.CString(s)
+	}
+
+	cOpts := make([]*C.rocksdb_options_t, numColumnFamilies)
+	for i, o := range cfOpts {
+		cOpts[i] = o.c
+	}
+
+	cHandles := make([]*C.rocksdb_column_family_handle_t, numColumnFamilies)
+
+	var cErr *C.char
+	_db := C.rocksdb_open_as_secondary_column_families(
+		opts.c,
+		cName,
+		cPath,
+		C.int(numColumnFamilies),
+		&cNames[0],
+		&cOpts[0],
+		&cHandles[0],
+		&cErr,
+	)
+	if err = fromCError(cErr); err == nil {
+		db = &DB{
+			name: name,
+			c:    _db,
+			opts: opts,
+		}
+		cfHandles = make([]*ColumnFamilyHandle, numColumnFamilies)
+		for i, c := range cHandles {
+			cfHandles[i] = NewNativeColumnFamilyHandle(c)
+		}
+	}
+
+	C.free(unsafe.Pointer(cPath))
+	C.free(unsafe.Pointer(cName))
+	for _, s := range cNames {
+		C.free(unsafe.Pointer(s))
+	}
+	return
 }
 
 // ListColumnFamilies lists the names of the column families in the DB.
-func ListColumnFamilies(opts *Options, name string) ([]string, error) {
+func ListColumnFamilies(opts *Options, name string) (names []string, err error) {
 	var (
 		cErr  *C.char
 		cLen  C.size_t
 		cName = C.CString(name)
 	)
-	defer C.free(unsafe.Pointer(cName))
-	cNames := C.rocksdb_list_column_families(opts.c, cName, &cLen, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return nil, errors.New(C.GoString(cErr))
-	}
-	namesLen := int(cLen)
-	names := make([]string, namesLen)
-	// The maximum capacity of the following two slices is limited to (2^29)-1 to remain compatible
-	// with 32-bit platforms. The size of a `*C.char` (a pointer) is 4 Byte on a 32-bit system
-	// and (2^29)*4 == math.MaxInt32 + 1. -- See issue golang/go#13656
-	cNamesArr := (*[(1 << 29) - 1]*C.char)(unsafe.Pointer(cNames))[:namesLen:namesLen]
-	for i, n := range cNamesArr {
-		names[i] = C.GoString(n)
-	}
-	C.rocksdb_list_column_families_destroy(cNames, cLen)
-	return names, nil
-}
 
-// UnsafeGetDB returns the underlying c rocksdb instance.
-func (db *DB) UnsafeGetDB() unsafe.Pointer {
-	return unsafe.Pointer(db.c)
+	cNames := C.rocksdb_list_column_families(opts.c, cName, &cLen, &cErr)
+	if err = fromCError(cErr); err == nil {
+		namesLen := int(cLen)
+
+		names = make([]string, namesLen)
+		// The maximum capacity of the following two slices is limited to (2^29)-1 to remain compatible
+		// with 32-bit platforms. The size of a `*C.char` (a pointer) is 4 Byte on a 32-bit system
+		// and (2^29)*4 == math.MaxInt32 + 1. -- See issue golang/go#13656
+		cNamesArr := (*[(1 << 29) - 1]*C.char)(unsafe.Pointer(cNames))[:namesLen:namesLen]
+		for i, n := range cNamesArr {
+			names[i] = C.GoString(n)
+		}
+	}
+
+	C.rocksdb_list_column_families_destroy(cNames, cLen)
+	C.free(unsafe.Pointer(cName))
+	return
 }
 
 // Name returns the name of the database.
@@ -237,73 +404,147 @@ func (db *DB) Name() string {
 	return db.name
 }
 
+// KeyMayExists the value is only allocated (using malloc) and returned if it is found and
+// value_found isn't NULL. In that case the user is responsible for freeing it.
+func (db *DB) KeyMayExists(opts *ReadOptions, key []byte, timestamp string) (slice *Slice) {
+	t := []byte(timestamp)
+
+	var (
+		cValue     *C.char
+		cValLen    C.size_t
+		cKey               = byteToChar(key)
+		cFound     C.uchar = 0
+		cTimestamp         = byteToChar(t)
+	)
+
+	C.rocksdb_key_may_exist(db.c, opts.c,
+		cKey, C.size_t(len(key)),
+		&cValue, &cValLen,
+		cTimestamp, C.size_t(len(t)),
+		&cFound)
+
+	if charToBool(cFound) {
+		slice = NewSlice(cValue, cValLen)
+	}
+
+	return
+}
+
+// KeyMayExistsCF the value is only allocated (using malloc) and returned if it is found and
+// value_found isn't NULL. In that case the user is responsible for freeing it.
+func (db *DB) KeyMayExistsCF(opts *ReadOptions, cf *ColumnFamilyHandle, key []byte, timestamp string) (slice *Slice) {
+	t := []byte(timestamp)
+
+	var (
+		cValue     *C.char
+		cValLen    C.size_t
+		cKey               = byteToChar(key)
+		cFound     C.uchar = 0
+		cTimestamp         = byteToChar(t)
+	)
+
+	C.rocksdb_key_may_exist_cf(db.c, opts.c,
+		cf.c,
+		cKey, C.size_t(len(key)),
+		&cValue, &cValLen,
+		cTimestamp, C.size_t(len(t)),
+		&cFound)
+
+	if charToBool(cFound) {
+		slice = NewSlice(cValue, cValLen)
+	}
+
+	return
+}
+
 // Get returns the data associated with the key from the database.
-func (db *DB) Get(opts *ReadOptions, key []byte) (*Slice, error) {
+func (db *DB) Get(opts *ReadOptions, key []byte) (slice *Slice, err error) {
 	var (
 		cErr    *C.char
 		cValLen C.size_t
 		cKey    = byteToChar(key)
 	)
+
 	cValue := C.rocksdb_get(db.c, opts.c, cKey, C.size_t(len(key)), &cValLen, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return nil, errors.New(C.GoString(cErr))
+	if err = fromCError(cErr); err == nil {
+		slice = NewSlice(cValue, cValLen)
 	}
-	return NewSlice(cValue, cValLen), nil
+
+	return
 }
 
 // GetBytes is like Get but returns a copy of the data.
-func (db *DB) GetBytes(opts *ReadOptions, key []byte) ([]byte, error) {
+func (db *DB) GetBytes(opts *ReadOptions, key []byte) (data []byte, err error) {
 	var (
 		cErr    *C.char
 		cValLen C.size_t
 		cKey    = byteToChar(key)
 	)
+
 	cValue := C.rocksdb_get(db.c, opts.c, cKey, C.size_t(len(key)), &cValLen, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return nil, errors.New(C.GoString(cErr))
+	if err = fromCError(cErr); err == nil {
+		if cValue == nil {
+			return nil, nil
+		}
+
+		data = C.GoBytes(unsafe.Pointer(cValue), C.int(cValLen))
+		C.rocksdb_free(unsafe.Pointer(cValue))
 	}
-	if cValue == nil {
-		return nil, nil
-	}
-	defer C.rocksdb_free(unsafe.Pointer(cValue))
-	return C.GoBytes(unsafe.Pointer(cValue), C.int(cValLen)), nil
+
+	return
 }
 
 // GetCF returns the data associated with the key from the database and column family.
-func (db *DB) GetCF(opts *ReadOptions, cf *ColumnFamilyHandle, key []byte) (*Slice, error) {
+func (db *DB) GetCF(opts *ReadOptions, cf *ColumnFamilyHandle, key []byte) (slice *Slice, err error) {
 	var (
 		cErr    *C.char
 		cValLen C.size_t
 		cKey    = byteToChar(key)
 	)
+
 	cValue := C.rocksdb_get_cf(db.c, opts.c, cf.c, cKey, C.size_t(len(key)), &cValLen, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return nil, errors.New(C.GoString(cErr))
+	if err = fromCError(cErr); err == nil {
+		slice = NewSlice(cValue, cValLen)
 	}
-	return NewSlice(cValue, cValLen), nil
+
+	return
 }
 
 // GetPinned returns the data associated with the key from the database.
-func (db *DB) GetPinned(opts *ReadOptions, key []byte) (*PinnableSliceHandle, error) {
+func (db *DB) GetPinned(opts *ReadOptions, key []byte) (handle *PinnableSliceHandle, err error) {
 	var (
 		cErr *C.char
 		cKey = byteToChar(key)
 	)
+
 	cHandle := C.rocksdb_get_pinned(db.c, opts.c, cKey, C.size_t(len(key)), &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return nil, errors.New(C.GoString(cErr))
+	if err = fromCError(cErr); err == nil {
+		handle = NewNativePinnableSliceHandle(cHandle)
 	}
-	return NewNativePinnableSliceHandle(cHandle), nil
+
+	return
+}
+
+// GetPinnedCF returns the data associated with the key from the database, specific column family.
+func (db *DB) GetPinnedCF(opts *ReadOptions, cf *ColumnFamilyHandle, key []byte) (handle *PinnableSliceHandle, err error) {
+	var (
+		cErr *C.char
+		cKey = byteToChar(key)
+	)
+
+	cHandle := C.rocksdb_get_pinned_cf(db.c, opts.c, cf.c, cKey, C.size_t(len(key)), &cErr)
+	if err = fromCError(cErr); err == nil {
+		handle = NewNativePinnableSliceHandle(cHandle)
+	}
+
+	return
 }
 
 // MultiGet returns the data associated with the passed keys from the database
 func (db *DB) MultiGet(opts *ReadOptions, keys ...[]byte) (Slices, error) {
+	// will destroy `cKeys` before return
 	cKeys, cKeySizes := byteSlicesToCSlices(keys)
-	defer cKeys.Destroy()
+
 	vals := make(charsSlice, len(keys))
 	valSizes := make(sizeTSlice, len(keys))
 	rocksErrs := make(charsSlice, len(keys))
@@ -322,14 +563,13 @@ func (db *DB) MultiGet(opts *ReadOptions, keys ...[]byte) (Slices, error) {
 	var errs []error
 
 	for i, rocksErr := range rocksErrs {
-		if rocksErr != nil {
-			defer C.rocksdb_free(unsafe.Pointer(rocksErr))
-			err := fmt.Errorf("getting %q failed: %v", string(keys[i]), C.GoString(rocksErr))
-			errs = append(errs, err)
+		if err := fromCError(rocksErr); err != nil {
+			errs = append(errs, fmt.Errorf("getting %q failed: %v", string(keys[i]), err.Error()))
 		}
 	}
 
 	if len(errs) > 0 {
+		cKeys.Destroy()
 		return nil, fmt.Errorf("failed to get %d keys, first error: %v", len(errs), errs[0])
 	}
 
@@ -338,6 +578,7 @@ func (db *DB) MultiGet(opts *ReadOptions, keys ...[]byte) (Slices, error) {
 		slices[i] = NewSlice(val, valSizes[i])
 	}
 
+	cKeys.Destroy()
 	return slices, nil
 }
 
@@ -353,8 +594,9 @@ func (db *DB) MultiGetCF(opts *ReadOptions, cf *ColumnFamilyHandle, keys ...[]by
 // MultiGetCFMultiCF returns the data associated with the passed keys and
 // column families.
 func (db *DB) MultiGetCFMultiCF(opts *ReadOptions, cfs ColumnFamilyHandles, keys [][]byte) (Slices, error) {
+	// will destroy `cKeys` before return
 	cKeys, cKeySizes := byteSlicesToCSlices(keys)
-	defer cKeys.Destroy()
+
 	vals := make(charsSlice, len(keys))
 	valSizes := make(sizeTSlice, len(keys))
 	rocksErrs := make(charsSlice, len(keys))
@@ -374,14 +616,13 @@ func (db *DB) MultiGetCFMultiCF(opts *ReadOptions, cfs ColumnFamilyHandles, keys
 	var errs []error
 
 	for i, rocksErr := range rocksErrs {
-		if rocksErr != nil {
-			defer C.rocksdb_free(unsafe.Pointer(rocksErr))
-			err := fmt.Errorf("getting %q failed: %v", string(keys[i]), C.GoString(rocksErr))
-			errs = append(errs, err)
+		if err := fromCError(rocksErr); err != nil {
+			errs = append(errs, fmt.Errorf("getting %q failed: %v", string(keys[i]), err.Error()))
 		}
 	}
 
 	if len(errs) > 0 {
+		cKeys.Destroy()
 		return nil, fmt.Errorf("failed to get %d keys, first error: %v", len(errs), errs[0])
 	}
 
@@ -390,107 +631,125 @@ func (db *DB) MultiGetCFMultiCF(opts *ReadOptions, cfs ColumnFamilyHandles, keys
 		slices[i] = NewSlice(val, valSizes[i])
 	}
 
+	cKeys.Destroy()
 	return slices, nil
 }
 
 // Put writes data associated with a key to the database.
-func (db *DB) Put(opts *WriteOptions, key, value []byte) error {
+func (db *DB) Put(opts *WriteOptions, key, value []byte) (err error) {
 	var (
 		cErr   *C.char
 		cKey   = byteToChar(key)
 		cValue = byteToChar(value)
 	)
+
 	C.rocksdb_put(db.c, opts.c, cKey, C.size_t(len(key)), cValue, C.size_t(len(value)), &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+
+	return
 }
 
 // PutCF writes data associated with a key to the database and column family.
-func (db *DB) PutCF(opts *WriteOptions, cf *ColumnFamilyHandle, key, value []byte) error {
+func (db *DB) PutCF(opts *WriteOptions, cf *ColumnFamilyHandle, key, value []byte) (err error) {
 	var (
 		cErr   *C.char
 		cKey   = byteToChar(key)
 		cValue = byteToChar(value)
 	)
+
 	C.rocksdb_put_cf(db.c, opts.c, cf.c, cKey, C.size_t(len(key)), cValue, C.size_t(len(value)), &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+
+	return
 }
 
 // Delete removes the data associated with the key from the database.
-func (db *DB) Delete(opts *WriteOptions, key []byte) error {
+func (db *DB) Delete(opts *WriteOptions, key []byte) (err error) {
 	var (
 		cErr *C.char
 		cKey = byteToChar(key)
 	)
+
 	C.rocksdb_delete(db.c, opts.c, cKey, C.size_t(len(key)), &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+
+	return
 }
 
 // DeleteCF removes the data associated with the key from the database and column family.
-func (db *DB) DeleteCF(opts *WriteOptions, cf *ColumnFamilyHandle, key []byte) error {
+func (db *DB) DeleteCF(opts *WriteOptions, cf *ColumnFamilyHandle, key []byte) (err error) {
 	var (
 		cErr *C.char
 		cKey = byteToChar(key)
 	)
+
 	C.rocksdb_delete_cf(db.c, opts.c, cf.c, cKey, C.size_t(len(key)), &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+
+	return
+}
+
+// DeleteRangeCF deletes keys that are between [startKey, endKey)
+func (db *DB) DeleteRangeCF(opts *WriteOptions, cf *ColumnFamilyHandle, startKey []byte, endKey []byte) (err error) {
+	var (
+		cErr      *C.char
+		cStartKey = byteToChar(startKey)
+		cEndKey   = byteToChar(endKey)
+	)
+
+	C.rocksdb_delete_range_cf(db.c, opts.c, cf.c, cStartKey, C.size_t(len(startKey)), cEndKey, C.size_t(len(endKey)), &cErr)
+	err = fromCError(cErr)
+
+	return
 }
 
 // Merge merges the data associated with the key with the actual data in the database.
-func (db *DB) Merge(opts *WriteOptions, key []byte, value []byte) error {
+func (db *DB) Merge(opts *WriteOptions, key []byte, value []byte) (err error) {
 	var (
 		cErr   *C.char
 		cKey   = byteToChar(key)
 		cValue = byteToChar(value)
 	)
+
 	C.rocksdb_merge(db.c, opts.c, cKey, C.size_t(len(key)), cValue, C.size_t(len(value)), &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+
+	return
 }
 
 // MergeCF merges the data associated with the key with the actual data in the
 // database and column family.
-func (db *DB) MergeCF(opts *WriteOptions, cf *ColumnFamilyHandle, key []byte, value []byte) error {
+func (db *DB) MergeCF(opts *WriteOptions, cf *ColumnFamilyHandle, key []byte, value []byte) (err error) {
 	var (
 		cErr   *C.char
 		cKey   = byteToChar(key)
 		cValue = byteToChar(value)
 	)
+
 	C.rocksdb_merge_cf(db.c, opts.c, cf.c, cKey, C.size_t(len(key)), cValue, C.size_t(len(value)), &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+
+	return
 }
 
-// Write writes a WriteBatch to the database
-func (db *DB) Write(opts *WriteOptions, batch *WriteBatch) error {
+// Write a batch to the database.
+func (db *DB) Write(opts *WriteOptions, batch *WriteBatch) (err error) {
 	var cErr *C.char
+
 	C.rocksdb_write(db.c, opts.c, batch.c, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+
+	return
+}
+
+// WriteWI writes a batch wi to the database.
+func (db *DB) WriteWI(opts *WriteOptions, batch *WriteBatchWI) (err error) {
+	var cErr *C.char
+
+	C.rocksdb_write_writebatch_wi(db.c, opts.c, batch.c, &cErr)
+	err = fromCError(cErr)
+
+	return
 }
 
 // NewIterator returns an Iterator over the the database that uses the
@@ -507,16 +766,52 @@ func (db *DB) NewIteratorCF(opts *ReadOptions, cf *ColumnFamilyHandle) *Iterator
 	return NewNativeIterator(unsafe.Pointer(cIter))
 }
 
-func (db *DB) GetUpdatesSince(seqNumber uint64) (*WalIterator, error) {
-	var cErr *C.char
-	cIter := C.rocksdb_get_updates_since(db.c, C.uint64_t(seqNumber), nil, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return nil, errors.New(C.GoString(cErr))
+// NewIterators returns iterators from a consistent database state across multiple
+// column families. Iterators are heap allocated and need to be deleted
+// before the db is deleted
+func (db *DB) NewIterators(opts *ReadOptions, cfs []*ColumnFamilyHandle) (iters []*Iterator, err error) {
+	if n := len(cfs); n > 0 {
+		_cfs := make([]*C.rocksdb_column_family_handle_t, n)
+		for i := range _cfs {
+			_cfs[i] = cfs[i].c
+		}
+		_iters := make([]*C.rocksdb_iterator_t, n)
+
+		var cErr *C.char
+		C.rocksdb_create_iterators(db.c, opts.c, &_cfs[0], &_iters[0], C.size_t(n), &cErr)
+		if err = fromCError(cErr); err == nil {
+			iters = make([]*Iterator, n)
+			for i := range iters {
+				iters[i] = NewNativeIterator(unsafe.Pointer(_iters[i]))
+			}
+		}
 	}
-	return NewNativeWalIterator(unsafe.Pointer(cIter)), nil
+	return
 }
 
+// GetUpdatesSince if the sequence number is non existent, it returns an iterator
+// at the first available seq_no after the requested seq_no.
+//
+// Must set WAL_ttl_seconds or WAL_size_limit_MB to large values to
+// use this api, else the WAL files will get
+// cleared aggressively and the iterator might keep getting invalid before
+// an update is read.
+//
+// Note: this API is not yet consistent with WritePrepared transactions.
+// Sets iter to an iterator that is positioned at a write-batch containing
+// seq_number.
+func (db *DB) GetUpdatesSince(seqNumber uint64) (iter *WalIterator, err error) {
+	var cErr *C.char
+
+	cIter := C.rocksdb_get_updates_since(db.c, C.uint64_t(seqNumber), nil, &cErr)
+	if err = fromCError(cErr); err == nil {
+		iter = NewNativeWalIterator(unsafe.Pointer(cIter))
+	}
+
+	return
+}
+
+// GetLatestSequenceNumber returns sequence number of the most recent transaction.
 func (db *DB) GetLatestSequenceNumber() uint64 {
 	return uint64(C.rocksdb_get_latest_sequence_number(db.c))
 }
@@ -534,47 +829,101 @@ func (db *DB) ReleaseSnapshot(snapshot *Snapshot) {
 }
 
 // GetProperty returns the value of a database property.
-func (db *DB) GetProperty(propName string) string {
+func (db *DB) GetProperty(propName string) (value string) {
 	cprop := C.CString(propName)
-	defer C.free(unsafe.Pointer(cprop))
 	cValue := C.rocksdb_property_value(db.c, cprop)
-	defer C.rocksdb_free(unsafe.Pointer(cValue))
-	return C.GoString(cValue)
+
+	value = C.GoString(cValue)
+
+	C.rocksdb_free(unsafe.Pointer(cValue))
+	C.free(unsafe.Pointer(cprop))
+	return
 }
 
 // GetPropertyCF returns the value of a database property.
-func (db *DB) GetPropertyCF(propName string, cf *ColumnFamilyHandle) string {
+func (db *DB) GetPropertyCF(propName string, cf *ColumnFamilyHandle) (value string) {
 	cProp := C.CString(propName)
-	defer C.free(unsafe.Pointer(cProp))
 	cValue := C.rocksdb_property_value_cf(db.c, cf.c, cProp)
-	defer C.rocksdb_free(unsafe.Pointer(cValue))
-	return C.GoString(cValue)
+
+	value = C.GoString(cValue)
+
+	C.rocksdb_free(unsafe.Pointer(cValue))
+	C.free(unsafe.Pointer(cProp))
+	return
+}
+
+// GetIntProperty similar to `GetProperty`, but only works for a subset of properties whose
+// return value is an integer. Return the value by integer.
+func (db *DB) GetIntProperty(propName string) (value uint64, success bool) {
+	cProp := C.CString(propName)
+	success = C.rocksdb_property_int(db.c, cProp, (*C.uint64_t)(&value)) == 0
+	C.free(unsafe.Pointer(cProp))
+	return
+}
+
+// GetIntPropertyCF similar to `GetProperty`, but only works for a subset of properties whose
+// return value is an integer. Return the value by integer.
+func (db *DB) GetIntPropertyCF(propName string, cf *ColumnFamilyHandle) (value uint64, success bool) {
+	cProp := C.CString(propName)
+	success = C.rocksdb_property_int_cf(db.c, cf.c, cProp, (*C.uint64_t)(&value)) == 0
+	C.free(unsafe.Pointer(cProp))
+	return
 }
 
 // CreateColumnFamily create a new column family.
-func (db *DB) CreateColumnFamily(opts *Options, name string) (*ColumnFamilyHandle, error) {
+func (db *DB) CreateColumnFamily(opts *Options, name string) (handle *ColumnFamilyHandle, err error) {
 	var (
 		cErr  *C.char
 		cName = C.CString(name)
 	)
-	defer C.free(unsafe.Pointer(cName))
+
 	cHandle := C.rocksdb_create_column_family(db.c, opts.c, cName, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return nil, errors.New(C.GoString(cErr))
+	if err = fromCError(cErr); err == nil {
+		handle = NewNativeColumnFamilyHandle(cHandle)
 	}
-	return NewNativeColumnFamilyHandle(cHandle), nil
+
+	C.free(unsafe.Pointer(cName))
+	return
+}
+
+// CreateColumnFamilyWithTTL create a new column family along with its ttl.
+//
+// BEHAVIOUR:
+// TTL is accepted in seconds
+// (int32_t)Timestamp(creation) is suffixed to values in Put internally
+// Expired TTL values deleted in compaction only:(Timestamp+ttl<time_now)
+// Get/Iterator may return expired entries(compaction not run on them yet)
+// Different TTL may be used during different Opens
+// Example: Open1 at t=0 with ttl=4 and insert k1,k2, close at t=2
+//          Open2 at t=3 with ttl=5. Now k1,k2 should be deleted at t>=5
+// read_only=true opens in the usual read-only mode. Compactions will not be
+//  triggered(neither manual nor automatic), so no expired entries removed
+//
+// CONSTRAINTS:
+// Not specifying/passing or non-positive TTL behaves like TTL = infinity
+func (db *DB) CreateColumnFamilyWithTTL(opts *Options, name string, ttl int) (handle *ColumnFamilyHandle, err error) {
+	var (
+		cErr  *C.char
+		cName = C.CString(name)
+	)
+
+	cHandle := C.rocksdb_create_column_family_with_ttl(db.c, opts.c, cName, C.int(ttl), &cErr)
+	if err = fromCError(cErr); err == nil {
+		handle = NewNativeColumnFamilyHandle(cHandle)
+	}
+
+	C.free(unsafe.Pointer(cName))
+	return
 }
 
 // DropColumnFamily drops a column family.
-func (db *DB) DropColumnFamily(c *ColumnFamilyHandle) error {
+func (db *DB) DropColumnFamily(c *ColumnFamilyHandle) (err error) {
 	var cErr *C.char
+
 	C.rocksdb_drop_column_family(db.c, c.c, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+
+	return
 }
 
 // GetApproximateSizes returns the approximate number of bytes of file system
@@ -582,10 +931,10 @@ func (db *DB) DropColumnFamily(c *ColumnFamilyHandle) error {
 //
 // The keys counted will begin at Range.Start and end on the key before
 // Range.Limit.
-func (db *DB) GetApproximateSizes(ranges []Range) []uint64 {
+func (db *DB) GetApproximateSizes(ranges []Range) ([]uint64, error) {
 	sizes := make([]uint64, len(ranges))
 	if len(ranges) == 0 {
-		return sizes
+		return sizes, nil
 	}
 
 	cStarts := make([]*C.char, len(ranges))
@@ -599,13 +948,7 @@ func (db *DB) GetApproximateSizes(ranges []Range) []uint64 {
 		cLimitLens[i] = C.size_t(len(r.Limit))
 	}
 
-	defer func() {
-		for i := range ranges {
-			C.free(unsafe.Pointer(cStarts[i]))
-			C.free(unsafe.Pointer(cLimits[i]))
-		}
-	}()
-
+	var cErr *C.char
 	C.rocksdb_approximate_sizes(
 		db.c,
 		C.int(len(ranges)),
@@ -613,9 +956,20 @@ func (db *DB) GetApproximateSizes(ranges []Range) []uint64 {
 		&cStartLens[0],
 		&cLimits[0],
 		&cLimitLens[0],
-		(*C.uint64_t)(&sizes[0]))
+		(*C.uint64_t)(&sizes[0]),
+		&cErr,
+	)
 
-	return sizes
+	// parse error
+	err := fromCError(cErr)
+
+	// free before return
+	for i := range ranges {
+		C.free(unsafe.Pointer(cStarts[i]))
+		C.free(unsafe.Pointer(cLimits[i]))
+	}
+
+	return sizes, err
 }
 
 // GetApproximateSizesCF returns the approximate number of bytes of file system
@@ -623,10 +977,10 @@ func (db *DB) GetApproximateSizes(ranges []Range) []uint64 {
 //
 // The keys counted will begin at Range.Start and end on the key before
 // Range.Limit.
-func (db *DB) GetApproximateSizesCF(cf *ColumnFamilyHandle, ranges []Range) []uint64 {
+func (db *DB) GetApproximateSizesCF(cf *ColumnFamilyHandle, ranges []Range) ([]uint64, error) {
 	sizes := make([]uint64, len(ranges))
 	if len(ranges) == 0 {
-		return sizes
+		return sizes, nil
 	}
 
 	cStarts := make([]*C.char, len(ranges))
@@ -640,13 +994,7 @@ func (db *DB) GetApproximateSizesCF(cf *ColumnFamilyHandle, ranges []Range) []ui
 		cLimitLens[i] = C.size_t(len(r.Limit))
 	}
 
-	defer func() {
-		for i := range ranges {
-			C.free(unsafe.Pointer(cStarts[i]))
-			C.free(unsafe.Pointer(cLimits[i]))
-		}
-	}()
-
+	var cErr *C.char
 	C.rocksdb_approximate_sizes_cf(
 		db.c,
 		cf.c,
@@ -655,21 +1003,31 @@ func (db *DB) GetApproximateSizesCF(cf *ColumnFamilyHandle, ranges []Range) []ui
 		&cStartLens[0],
 		&cLimits[0],
 		&cLimitLens[0],
-		(*C.uint64_t)(&sizes[0]))
+		(*C.uint64_t)(&sizes[0]),
+		&cErr,
+	)
 
-	return sizes
+	// parse error
+	err := fromCError(cErr)
+
+	// free before return
+	for i := range ranges {
+		C.free(unsafe.Pointer(cStarts[i]))
+		C.free(unsafe.Pointer(cLimits[i]))
+	}
+
+	return sizes, err
 }
 
 // SetOptions dynamically changes options through the SetOptions API.
-func (db *DB) SetOptions(keys, values []string) error {
-	num_keys := len(keys)
-
-	if num_keys == 0 {
+func (db *DB) SetOptions(keys, values []string) (err error) {
+	numKeys := len(keys)
+	if numKeys == 0 {
 		return nil
 	}
 
-	cKeys := make([]*C.char, num_keys)
-	cValues := make([]*C.char, num_keys)
+	cKeys := make([]*C.char, numKeys)
+	cValues := make([]*C.char, numKeys)
 	for i := range keys {
 		cKeys[i] = C.CString(keys[i])
 		cValues[i] = C.CString(values[i])
@@ -679,16 +1037,43 @@ func (db *DB) SetOptions(keys, values []string) error {
 
 	C.rocksdb_set_options(
 		db.c,
-		C.int(num_keys),
+		C.int(numKeys),
 		&cKeys[0],
 		&cValues[0],
 		&cErr,
 	)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
+	err = fromCError(cErr)
+
+	return
+}
+
+// SetOptionsCF dynamically changes options through the SetOptions API for specific Column Family.
+func (db *DB) SetOptionsCF(cf *ColumnFamilyHandle, keys, values []string) (err error) {
+	numKeys := len(keys)
+	if numKeys == 0 {
+		return nil
 	}
-	return nil
+
+	cKeys := make([]*C.char, numKeys)
+	cValues := make([]*C.char, numKeys)
+	for i := range keys {
+		cKeys[i] = C.CString(keys[i])
+		cValues[i] = C.CString(values[i])
+	}
+
+	var cErr *C.char
+
+	C.rocksdb_set_options_cf(
+		db.c,
+		cf.c,
+		C.int(numKeys),
+		&cKeys[0],
+		&cValues[0],
+		&cErr,
+	)
+	err = fromCError(cErr)
+
+	return
 }
 
 // LiveFileMetadata is a metadata which is associated with each SST file.
@@ -698,13 +1083,14 @@ type LiveFileMetadata struct {
 	Size        int64
 	SmallestKey []byte
 	LargestKey  []byte
+	Entries     uint64 // number of entries
+	Deletions   uint64 // number of deletions
 }
 
 // GetLiveFilesMetaData returns a list of all table files with their
 // level, start key and end key.
 func (db *DB) GetLiveFilesMetaData() []LiveFileMetadata {
 	lf := C.rocksdb_livefiles(db.c)
-	defer C.rocksdb_livefiles_destroy(lf)
 
 	count := C.rocksdb_livefiles_count(lf)
 	liveFiles := make([]LiveFileMetadata, int(count))
@@ -720,8 +1106,15 @@ func (db *DB) GetLiveFilesMetaData() []LiveFileMetadata {
 
 		key = C.rocksdb_livefiles_largestkey(lf, i, &cSize)
 		liveFile.LargestKey = C.GoBytes(unsafe.Pointer(key), C.int(cSize))
+
+		liveFile.Entries = uint64(C.rocksdb_livefiles_entries(lf, i))
+
+		liveFile.Deletions = uint64(C.rocksdb_livefiles_deletions(lf, i))
+
 		liveFiles[int(i)] = liveFile
 	}
+
+	C.rocksdb_livefiles_destroy(lf)
 	return liveFiles
 }
 
@@ -741,37 +1134,71 @@ func (db *DB) CompactRangeCF(cf *ColumnFamilyHandle, r Range) {
 	C.rocksdb_compact_range_cf(db.c, cf.c, cStart, C.size_t(len(r.Start)), cLimit, C.size_t(len(r.Limit)))
 }
 
-// Flush triggers a manuel flush for the database.
-func (db *DB) Flush(opts *FlushOptions) error {
+// CompactRangeOpt runs a manual compaction on the Range of keys given with provided options. This is
+// not likely to be needed for typical usage.
+func (db *DB) CompactRangeOpt(r Range, opt *CompactRangeOptions) {
+	cStart := byteToChar(r.Start)
+	cLimit := byteToChar(r.Limit)
+	C.rocksdb_compact_range_opt(db.c, opt.c, cStart, C.size_t(len(r.Start)), cLimit, C.size_t(len(r.Limit)))
+}
+
+// CompactRangeCFOpt runs a manual compaction on the Range of keys given on the
+// given column family with provided options. This is not likely to be needed for typical usage.
+func (db *DB) CompactRangeCFOpt(cf *ColumnFamilyHandle, r Range, opt *CompactRangeOptions) {
+	cStart := byteToChar(r.Start)
+	cLimit := byteToChar(r.Limit)
+	C.rocksdb_compact_range_cf_opt(db.c, cf.c, opt.c, cStart, C.size_t(len(r.Start)), cLimit, C.size_t(len(r.Limit)))
+}
+
+// Flush triggers a manual flush for the database.
+func (db *DB) Flush(opts *FlushOptions) (err error) {
 	var cErr *C.char
+
 	C.rocksdb_flush(db.c, opts.c, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+
+	return
+}
+
+// FlushCF triggers a manual flush for the database on specific column family.
+func (db *DB) FlushCF(cf *ColumnFamilyHandle, opts *FlushOptions) (err error) {
+	var cErr *C.char
+
+	C.rocksdb_flush_cf(db.c, opts.c, cf.c, &cErr)
+	err = fromCError(cErr)
+
+	return
+}
+
+// FlushWAL flushes the WAL memory buffer to the file. If sync is true, it calls SyncWAL
+// afterwards.
+func (db *DB) FlushWAL(sync bool) (err error) {
+	var cErr *C.char
+
+	C.rocksdb_flush_wal(db.c, boolToChar(sync), &cErr)
+	err = fromCError(cErr)
+
+	return
 }
 
 // DisableFileDeletions disables file deletions and should be used when backup the database.
-func (db *DB) DisableFileDeletions() error {
+func (db *DB) DisableFileDeletions() (err error) {
 	var cErr *C.char
+
 	C.rocksdb_disable_file_deletions(db.c, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+
+	return
 }
 
 // EnableFileDeletions enables file deletions for the database.
-func (db *DB) EnableFileDeletions(force bool) error {
+func (db *DB) EnableFileDeletions(force bool) (err error) {
 	var cErr *C.char
+
 	C.rocksdb_enable_file_deletions(db.c, boolToChar(force), &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+
+	return
 }
 
 // DeleteFile deletes the file name from the db directory and update the internal state to
@@ -779,12 +1206,14 @@ func (db *DB) EnableFileDeletions(force bool) error {
 // path relative to the db directory. eg. 000001.sst, /archive/000003.log.
 func (db *DB) DeleteFile(name string) {
 	cName := C.CString(name)
-	defer C.free(unsafe.Pointer(cName))
+
 	C.rocksdb_delete_file(db.c, cName)
+
+	C.free(unsafe.Pointer(cName))
 }
 
 // DeleteFileInRange deletes SST files that contain keys between the Range, [r.Start, r.Limit]
-func (db *DB) DeleteFileInRange(r Range) error {
+func (db *DB) DeleteFileInRange(r Range) (err error) {
 	cStartKey := byteToChar(r.Start)
 	cLimitKey := byteToChar(r.Limit)
 
@@ -796,17 +1225,14 @@ func (db *DB) DeleteFileInRange(r Range) error {
 		cLimitKey, C.size_t(len(r.Limit)),
 		&cErr,
 	)
+	err = fromCError(cErr)
 
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	return
 }
 
 // DeleteFileInRangeCF deletes SST files that contain keys between the Range, [r.Start, r.Limit], and
 // belong to a given column family
-func (db *DB) DeleteFileInRangeCF(cf *ColumnFamilyHandle, r Range) error {
+func (db *DB) DeleteFileInRangeCF(cf *ColumnFamilyHandle, r Range) (err error) {
 	cStartKey := byteToChar(r.Start)
 	cLimitKey := byteToChar(r.Limit)
 
@@ -819,25 +1245,17 @@ func (db *DB) DeleteFileInRangeCF(cf *ColumnFamilyHandle, r Range) error {
 		cLimitKey, C.size_t(len(r.Limit)),
 		&cErr,
 	)
+	err = fromCError(cErr)
 
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	return
 }
 
 // IngestExternalFile loads a list of external SST files.
-func (db *DB) IngestExternalFile(filePaths []string, opts *IngestExternalFileOptions) error {
+func (db *DB) IngestExternalFile(filePaths []string, opts *IngestExternalFileOptions) (err error) {
 	cFilePaths := make([]*C.char, len(filePaths))
 	for i, s := range filePaths {
 		cFilePaths[i] = C.CString(s)
 	}
-	defer func() {
-		for _, s := range cFilePaths {
-			C.free(unsafe.Pointer(s))
-		}
-	}()
 
 	var cErr *C.char
 
@@ -848,25 +1266,22 @@ func (db *DB) IngestExternalFile(filePaths []string, opts *IngestExternalFileOpt
 		opts.c,
 		&cErr,
 	)
+	err = fromCError(cErr)
 
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
+	// free before return
+	for _, s := range cFilePaths {
+		C.free(unsafe.Pointer(s))
 	}
-	return nil
+
+	return
 }
 
 // IngestExternalFileCF loads a list of external SST files for a column family.
-func (db *DB) IngestExternalFileCF(handle *ColumnFamilyHandle, filePaths []string, opts *IngestExternalFileOptions) error {
+func (db *DB) IngestExternalFileCF(handle *ColumnFamilyHandle, filePaths []string, opts *IngestExternalFileOptions) (err error) {
 	cFilePaths := make([]*C.char, len(filePaths))
 	for i, s := range filePaths {
 		cFilePaths[i] = C.CString(s)
 	}
-	defer func() {
-		for _, s := range cFilePaths {
-			C.free(unsafe.Pointer(s))
-		}
-	}()
 
 	var cErr *C.char
 
@@ -878,62 +1293,80 @@ func (db *DB) IngestExternalFileCF(handle *ColumnFamilyHandle, filePaths []strin
 		opts.c,
 		&cErr,
 	)
+	err = fromCError(cErr)
 
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
+	// free before return
+	for _, s := range cFilePaths {
+		C.free(unsafe.Pointer(s))
 	}
-	return nil
+
+	return
 }
 
 // NewCheckpoint creates a new Checkpoint for this db.
-func (db *DB) NewCheckpoint() (*Checkpoint, error) {
-	var (
-		cErr *C.char
-	)
+func (db *DB) NewCheckpoint() (cp *Checkpoint, err error) {
+	var cErr *C.char
 	cCheckpoint := C.rocksdb_checkpoint_object_create(
 		db.c, &cErr,
 	)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return nil, errors.New(C.GoString(cErr))
+	if err = fromCError(cErr); err == nil {
+		cp = NewNativeCheckpoint(cCheckpoint)
 	}
+	return
+}
 
-	return NewNativeCheckpoint(cCheckpoint), nil
+// TryCatchUpWithPrimary to make the secondary
+// instance catch up with primary (WAL tailing is NOT supported now) whenever
+// the user feels necessary. Column families created by the primary after the
+// secondary instance starts are currently ignored by the secondary instance.
+// Column families opened by secondary and dropped by the primary will be
+// dropped by secondary as well. However the user of the secondary instance
+// can still access the data of such dropped column family as long as they
+// do not destroy the corresponding column family handle.
+// WAL tailing is not supported at present, but will arrive soon.
+func (db *DB) TryCatchUpWithPrimary() (err error) {
+	var cErr *C.char
+	C.rocksdb_try_catch_up_with_primary(db.c, &cErr)
+	err = fromCError(cErr)
+	return
+}
+
+// CancelAllBackgroundWork requests stopping background work, if wait is true wait until it's done
+func (db *DB) CancelAllBackgroundWork(wait bool) {
+	C.rocksdb_cancel_all_background_work(db.c, boolToChar(wait))
 }
 
 // Close closes the database.
 func (db *DB) Close() {
 	C.rocksdb_close(db.c)
+	db.c = nil
 }
 
 // DestroyDb removes a database entirely, removing everything from the
 // filesystem.
-func DestroyDb(name string, opts *Options) error {
+func DestroyDb(name string, opts *Options) (err error) {
 	var (
 		cErr  *C.char
 		cName = C.CString(name)
 	)
-	defer C.free(unsafe.Pointer(cName))
+
 	C.rocksdb_destroy_db(opts.c, cName, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+
+	C.free(unsafe.Pointer(cName))
+	return
 }
 
 // RepairDb repairs a database.
-func RepairDb(name string, opts *Options) error {
+func RepairDb(name string, opts *Options) (err error) {
 	var (
 		cErr  *C.char
 		cName = C.CString(name)
 	)
-	defer C.free(unsafe.Pointer(cName))
+
 	C.rocksdb_repair_db(opts.c, cName, &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	err = fromCError(cErr)
+
+	C.free(unsafe.Pointer(cName))
+	return
 }

@@ -1,18 +1,55 @@
-# gorocksdb, a Go wrapper for RocksDB
+# grocksdb, RocksDB wrapper for Go
 
-[![Build Status](https://travis-ci.org/tecbot/gorocksdb.svg)](https://travis-ci.org/tecbot/gorocksdb) [![GoDoc](https://godoc.org/github.com/tecbot/gorocksdb?status.svg)](http://godoc.org/github.com/tecbot/gorocksdb)
+[![](https://github.com/linxGnu/grocksdb/workflows/CI/badge.svg)]()
+[![Go Report Card](https://goreportcard.com/badge/github.com/linxGnu/grocksdb)](https://goreportcard.com/report/github.com/linxGnu/grocksdb)
+[![Coverage Status](https://coveralls.io/repos/github/linxGnu/grocksdb/badge.svg?branch=master)](https://coveralls.io/github/linxGnu/grocksdb?branch=master)
+[![godoc](https://img.shields.io/badge/docs-GoDoc-green.svg)](https://godoc.org/github.com/linxGnu/grocksdb)
+
+This is a `Fork` from [tecbot/gorocksdb](https://github.com/tecbot/gorocksdb). I respect the author work and community contribution.
+The `LICENSE` still remains as upstream.
+
+Why I made a patched clone instead of PR:
+- Supports almost C API (unlike upstream). Catching up with latest version of Rocksdb as promise.
+- This fork contains `no defer` in codebase (my side project requires as less overhead as possible). This introduces loose
+convention of how/when to free c-mem, thus break the rule of [tecbot/gorocksdb](https://github.com/tecbot/gorocksdb).
 
 ## Install
 
-You'll need to build [RocksDB](https://github.com/facebook/rocksdb) v5.16+ on your machine.
+### Prerequisite 
 
-After that, you can install gorocksdb using the following command:
+- librocksdb
+- libsnappy
+- libz
+- liblz4
+- libzstd
 
-    CGO_CFLAGS="-I/path/to/rocksdb/include" \
-    CGO_LDFLAGS="-L/path/to/rocksdb -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd" \
-      go get github.com/tecbot/gorocksdb
+Please follow this guide: https://github.com/facebook/rocksdb/blob/master/INSTALL.md to build above libs.
 
-Please note that this package might upgrade the required RocksDB version at any moment.
-Vendoring is thus highly recommended if you require high stability.
+### Build 
 
-*The [embedded CockroachDB RocksDB](https://github.com/cockroachdb/c-rocksdb) is no longer supported in gorocksdb.*
+After that, you can install and build `grocksdb` using the following commands:
+
+```
+go get -u github.com/linxGnu/grocksdb
+
+CGO_CFLAGS="-I/path/to/rocksdb/include" \
+CGO_LDFLAGS="-L/path/to/rocksdb -lrocksdb -lstdc++ -lm -lz -lsnappy -llz4 -lzstd" \
+  go build
+```
+
+Or just:
+```
+go build // if prerequisites are in linker paths
+```
+
+## Usage
+
+See also: [doc](https://godoc.org/github.com/linxGnu/grocksdb)
+
+## API Support
+
+Almost C API, excepts:
+- [ ] putv/mergev/deletev/delete_rangev
+- [ ] compaction_filter/compaction_filter_factory/compaction_filter_context
+- [ ] transactiondb_property_value/transactiondb_property_int
+- [ ] optimistictransactiondb_property_value/optimistictransactiondb_property_int

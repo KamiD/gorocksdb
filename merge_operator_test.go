@@ -1,9 +1,9 @@
-package gorocksdb
+package grocksdb
 
 import (
 	"testing"
 
-	"github.com/facebookgo/ensure"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMergeOperator(t *testing.T) {
@@ -15,9 +15,9 @@ func TestMergeOperator(t *testing.T) {
 	)
 	merger := &mockMergeOperator{
 		fullMerge: func(key, existingValue []byte, operands [][]byte) ([]byte, bool) {
-			ensure.DeepEqual(&fatalAsError{t}, key, givenKey)
-			ensure.DeepEqual(&fatalAsError{t}, existingValue, givenVal1)
-			ensure.DeepEqual(&fatalAsError{t}, operands, [][]byte{givenVal2})
+			require.EqualValues(t, key, givenKey)
+			require.EqualValues(t, existingValue, givenVal1)
+			require.EqualValues(t, operands, [][]byte{givenVal2})
 			return givenMerged, true
 		},
 	}
@@ -27,17 +27,17 @@ func TestMergeOperator(t *testing.T) {
 	defer db.Close()
 
 	wo := NewDefaultWriteOptions()
-	ensure.Nil(t, db.Put(wo, givenKey, givenVal1))
-	ensure.Nil(t, db.Merge(wo, givenKey, givenVal2))
+	require.Nil(t, db.Put(wo, givenKey, givenVal1))
+	require.Nil(t, db.Merge(wo, givenKey, givenVal2))
 
 	// trigger a compaction to ensure that a merge is performed
 	db.CompactRange(Range{nil, nil})
 
 	ro := NewDefaultReadOptions()
 	v1, err := db.Get(ro, givenKey)
-	defer v1.Free()
-	ensure.Nil(t, err)
-	ensure.DeepEqual(t, v1.Data(), givenMerged)
+	require.Nil(t, err)
+	require.EqualValues(t, v1.Data(), givenMerged)
+	v1.Free()
 }
 
 func TestPartialMergeOperator(t *testing.T) {
@@ -52,15 +52,15 @@ func TestPartialMergeOperator(t *testing.T) {
 
 	merger := &mockMergePartialOperator{
 		fullMerge: func(key, existingValue []byte, operands [][]byte) ([]byte, bool) {
-			ensure.DeepEqual(&fatalAsError{t}, key, givenKey)
-			ensure.DeepEqual(&fatalAsError{t}, existingValue, startingVal)
-			ensure.DeepEqual(&fatalAsError{t}, operands[0], pMergeResult)
+			require.EqualValues(t, key, givenKey)
+			require.EqualValues(t, existingValue, startingVal)
+			require.EqualValues(t, operands[0], pMergeResult)
 			return fMergeResult, true
 		},
 		partialMerge: func(key, leftOperand, rightOperand []byte) ([]byte, bool) {
-			ensure.DeepEqual(&fatalAsError{t}, key, givenKey)
-			ensure.DeepEqual(&fatalAsError{t}, leftOperand, mergeVal1)
-			ensure.DeepEqual(&fatalAsError{t}, rightOperand, mergeVal2)
+			require.EqualValues(t, key, givenKey)
+			require.EqualValues(t, leftOperand, mergeVal1)
+			require.EqualValues(t, rightOperand, mergeVal2)
 			return pMergeResult, true
 		},
 	}
@@ -73,14 +73,14 @@ func TestPartialMergeOperator(t *testing.T) {
 	defer wo.Destroy()
 
 	// insert a starting value and compact to trigger merges
-	ensure.Nil(t, db.Put(wo, givenKey, startingVal))
+	require.Nil(t, db.Put(wo, givenKey, startingVal))
 
 	// trigger a compaction to ensure that a merge is performed
 	db.CompactRange(Range{nil, nil})
 
 	// we expect these two operands to be passed to merge partial
-	ensure.Nil(t, db.Merge(wo, givenKey, mergeVal1))
-	ensure.Nil(t, db.Merge(wo, givenKey, mergeVal2))
+	require.Nil(t, db.Merge(wo, givenKey, mergeVal1))
+	require.Nil(t, db.Merge(wo, givenKey, mergeVal2))
 
 	// trigger a compaction to ensure that a
 	// partial and full merge are performed
@@ -89,8 +89,8 @@ func TestPartialMergeOperator(t *testing.T) {
 	ro := NewDefaultReadOptions()
 	v1, err := db.Get(ro, givenKey)
 	defer v1.Free()
-	ensure.Nil(t, err)
-	ensure.DeepEqual(t, v1.Data(), fMergeResult)
+	require.Nil(t, err)
+	require.EqualValues(t, v1.Data(), fMergeResult)
 
 }
 
@@ -101,20 +101,20 @@ func TestMergeMultiOperator(t *testing.T) {
 		mergeVal1    = []byte("bar")
 		mergeVal2    = []byte("baz")
 		fMergeResult = []byte("foobarbaz")
-		pMergeResult = []byte("barbaz")
+		pMergeResult = []byte("bar")
 	)
 
 	merger := &mockMergeMultiOperator{
 		fullMerge: func(key, existingValue []byte, operands [][]byte) ([]byte, bool) {
-			ensure.DeepEqual(&fatalAsError{t}, key, givenKey)
-			ensure.DeepEqual(&fatalAsError{t}, existingValue, startingVal)
-			ensure.DeepEqual(&fatalAsError{t}, operands[0], pMergeResult)
+			require.EqualValues(t, key, givenKey)
+			require.EqualValues(t, existingValue, startingVal)
+			require.EqualValues(t, operands[0], pMergeResult)
 			return fMergeResult, true
 		},
 		partialMergeMulti: func(key []byte, operands [][]byte) ([]byte, bool) {
-			ensure.DeepEqual(&fatalAsError{t}, key, givenKey)
-			ensure.DeepEqual(&fatalAsError{t}, operands[0], mergeVal1)
-			ensure.DeepEqual(&fatalAsError{t}, operands[1], mergeVal2)
+			require.EqualValues(t, key, givenKey)
+			require.EqualValues(t, operands[0], mergeVal1)
+			require.EqualValues(t, operands[1], mergeVal2)
 			return pMergeResult, true
 		},
 	}
@@ -127,14 +127,14 @@ func TestMergeMultiOperator(t *testing.T) {
 	defer wo.Destroy()
 
 	// insert a starting value and compact to trigger merges
-	ensure.Nil(t, db.Put(wo, givenKey, startingVal))
+	require.Nil(t, db.Put(wo, givenKey, startingVal))
 
 	// trigger a compaction to ensure that a merge is performed
 	db.CompactRange(Range{nil, nil})
 
 	// we expect these two operands to be passed to merge multi
-	ensure.Nil(t, db.Merge(wo, givenKey, mergeVal1))
-	ensure.Nil(t, db.Merge(wo, givenKey, mergeVal2))
+	require.Nil(t, db.Merge(wo, givenKey, mergeVal1))
+	require.Nil(t, db.Merge(wo, givenKey, mergeVal2))
 
 	// trigger a compaction to ensure that a
 	// partial and full merge are performed
@@ -143,9 +143,8 @@ func TestMergeMultiOperator(t *testing.T) {
 	ro := NewDefaultReadOptions()
 	v1, err := db.Get(ro, givenKey)
 	defer v1.Free()
-	ensure.Nil(t, err)
-	ensure.DeepEqual(t, v1.Data(), fMergeResult)
-
+	require.Nil(t, err)
+	require.EqualValues(t, v1.Data(), fMergeResult)
 }
 
 // Mock Objects
@@ -153,7 +152,7 @@ type mockMergeOperator struct {
 	fullMerge func(key, existingValue []byte, operands [][]byte) ([]byte, bool)
 }
 
-func (m *mockMergeOperator) Name() string { return "gorocksdb.test" }
+func (m *mockMergeOperator) Name() string { return "grocksdb.test" }
 func (m *mockMergeOperator) FullMerge(key, existingValue []byte, operands [][]byte) ([]byte, bool) {
 	return m.fullMerge(key, existingValue, operands)
 }
@@ -163,7 +162,7 @@ type mockMergeMultiOperator struct {
 	partialMergeMulti func(key []byte, operands [][]byte) ([]byte, bool)
 }
 
-func (m *mockMergeMultiOperator) Name() string { return "gorocksdb.multi" }
+func (m *mockMergeMultiOperator) Name() string { return "grocksdb.multi" }
 func (m *mockMergeMultiOperator) FullMerge(key, existingValue []byte, operands [][]byte) ([]byte, bool) {
 	return m.fullMerge(key, existingValue, operands)
 }
@@ -176,7 +175,7 @@ type mockMergePartialOperator struct {
 	partialMerge func(key, leftOperand, rightOperand []byte) ([]byte, bool)
 }
 
-func (m *mockMergePartialOperator) Name() string { return "gorocksdb.partial" }
+func (m *mockMergePartialOperator) Name() string { return "grocksdb.partial" }
 func (m *mockMergePartialOperator) FullMerge(key, existingValue []byte, operands [][]byte) ([]byte, bool) {
 	return m.fullMerge(key, existingValue, operands)
 }

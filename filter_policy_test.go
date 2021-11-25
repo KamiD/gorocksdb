@@ -1,20 +1,10 @@
-package gorocksdb
+package grocksdb
 
 import (
 	"testing"
 
-	"github.com/facebookgo/ensure"
+	"github.com/stretchr/testify/require"
 )
-
-// fatalAsError is used as a wrapper to make it possible to use ensure
-// also if C calls Go otherwise it will throw a internal lockOSThread error.
-type fatalAsError struct {
-	t *testing.T
-}
-
-func (f *fatalAsError) Fatal(a ...interface{}) {
-	f.t.Error(a...)
-}
 
 func TestFilterPolicy(t *testing.T) {
 	var (
@@ -26,13 +16,13 @@ func TestFilterPolicy(t *testing.T) {
 	policy := &mockFilterPolicy{
 		createFilter: func(keys [][]byte) []byte {
 			createFilterCalled = true
-			ensure.DeepEqual(&fatalAsError{t}, keys, givenKeys)
+			require.EqualValues(t, keys, givenKeys)
 			return givenFilter
 		},
 		keyMayMatch: func(key, filter []byte) bool {
 			keyMayMatchCalled = true
-			ensure.DeepEqual(&fatalAsError{t}, key, givenKeys[0])
-			ensure.DeepEqual(&fatalAsError{t}, filter, givenFilter)
+			require.EqualValues(t, key, givenKeys[0])
+			require.EqualValues(t, filter, givenFilter)
 			return true
 		},
 	}
@@ -47,19 +37,19 @@ func TestFilterPolicy(t *testing.T) {
 	// insert keys
 	wo := NewDefaultWriteOptions()
 	for _, k := range givenKeys {
-		ensure.Nil(t, db.Put(wo, k, []byte("val")))
+		require.Nil(t, db.Put(wo, k, []byte("val")))
 	}
 
 	// flush to trigger the filter creation
-	ensure.Nil(t, db.Flush(NewDefaultFlushOptions()))
-	ensure.True(t, createFilterCalled)
+	require.Nil(t, db.Flush(NewDefaultFlushOptions()))
+	require.True(t, createFilterCalled)
 
 	// test key may match call
 	ro := NewDefaultReadOptions()
 	v1, err := db.Get(ro, givenKeys[0])
 	defer v1.Free()
-	ensure.Nil(t, err)
-	ensure.True(t, keyMayMatchCalled)
+	require.Nil(t, err)
+	require.True(t, keyMayMatchCalled)
 }
 
 type mockFilterPolicy struct {
@@ -67,10 +57,14 @@ type mockFilterPolicy struct {
 	keyMayMatch  func(key, filter []byte) bool
 }
 
-func (m *mockFilterPolicy) Name() string { return "gorocksdb.test" }
+func (m *mockFilterPolicy) Name() string { return "grocksdb.test" }
+
 func (m *mockFilterPolicy) CreateFilter(keys [][]byte) []byte {
 	return m.createFilter(keys)
 }
+
 func (m *mockFilterPolicy) KeyMayMatch(key, filter []byte) bool {
 	return m.keyMayMatch(key, filter)
 }
+
+func (m *mockFilterPolicy) Destroy() {}
