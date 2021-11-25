@@ -1,11 +1,10 @@
-package gorocksdb
+package grocksdb
 
 // #include <stdlib.h>
 // #include "rocksdb/c.h"
 import "C"
 
 import (
-	"errors"
 	"unsafe"
 )
 
@@ -33,20 +32,15 @@ func NewNativeCheckpoint(c *C.rocksdb_checkpoint_t) *Checkpoint {
 // away from the default, the checkpoint may not contain up-to-date data
 // if WAL writing is not always enabled.
 // Flush will always trigger if it is 2PC.
-func (checkpoint *Checkpoint) CreateCheckpoint(checkpoint_dir string, log_size_for_flush uint64) error {
-	var (
-		cErr *C.char
-	)
+func (checkpoint *Checkpoint) CreateCheckpoint(checkpointDir string, logSizeForFlush uint64) (err error) {
+	cDir := C.CString(checkpointDir)
 
-	cDir := C.CString(checkpoint_dir)
-	defer C.free(unsafe.Pointer(cDir))
+	var cErr *C.char
+	C.rocksdb_checkpoint_create(checkpoint.c, cDir, C.uint64_t(logSizeForFlush), &cErr)
+	err = fromCError(cErr)
 
-	C.rocksdb_checkpoint_create(checkpoint.c, cDir, C.uint64_t(log_size_for_flush), &cErr)
-	if cErr != nil {
-		defer C.rocksdb_free(unsafe.Pointer(cErr))
-		return errors.New(C.GoString(cErr))
-	}
-	return nil
+	C.free(unsafe.Pointer(cDir))
+	return
 }
 
 // Destroy deallocates the Checkpoint object.
